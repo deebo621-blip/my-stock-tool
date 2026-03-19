@@ -5,7 +5,7 @@ import requests
 import time
 import ssl
 
-# --- 1. 基礎設定與 SSL 修正 ---
+# --- 1. 基礎設定 ---
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -13,13 +13,12 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_https_context
 
-st.set_page_config(page_title="台股大戶動能選股器", layout="wide")
+st.set_page_config(page_title="台股籌碼監控助手", layout="wide")
 
 # --- 2. 核心功能 ---
 
 @st.cache_data(ttl=3600)
 def fetch_all_stock_ids():
-    """抓取全市場名單"""
     stocks = []
     try:
         urls = ['https://isin.twse.com.tw/isin/C_public.jsp?strMode=2', 
@@ -31,50 +30,15 @@ def fetch_all_stock_ids():
             stocks.extend(df[0].apply(lambda x: x.split(' ')[0]).tolist())
         return [s for s in stocks if len(s) == 4]
     except:
-        return ["2330", "2317", "3535", "1513", "1504", "2308", "2454"]
-
-def check_momentum(stock_ids):
-    """第一階段：股價強勢度過濾"""
-    qualified = []
-    bar = st.progress(0)
-    status = st.empty()
-    
-    batch_size = 50
-    for i in range(0, len(stock_ids), batch_size):
-        batch = stock_ids[i:i+batch_size]
-        tickers = [f"{s}.TW" for s in batch]
-        status.text(f"🔍 掃描股價動能中... ({i}/{len(stock_ids)})")
-        
-        try:
-            # 抓取 1 年數據
-            data = yf.download(tickers, period="1y", group_by='ticker', progress=False, threads=True)
-            for s_id in batch:
-                try:
-                    s_df = data[f"{s_id}.TW"].dropna()
-                    if len(s_df) < 60: continue
-                    
-                    curr_price = s_df['Close'].iloc[-1]
-                    high_120d = s_df['High'].iloc[-120:].max()
-                    ma20 = s_df['Close'].rolling(window=20).mean()
-                    
-                    # 條件：股價距離 120日高點 5% 以內 (相對強勢)
-                    if curr_price >= high_120d * 0.95:
-                        qualified.append({'代碼': s_id, '目前股價': round(curr_price, 2)})
-                except: continue
-        except: continue
-        bar.progress(min((i + batch_size) / len(stock_ids), 1.0))
-    status.empty()
-    return qualified
+        return ["2330", "2317", "3535", "1513"]
 
 def get_chip_info(stock_id):
-    """第二階段：神秘金字塔大戶籌碼"""
+    """抓取神秘金字塔大戶籌碼"""
     url = f"https://norway.twsthr.info/StockHolders.aspx?stock={stock_id}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(res.text)[1]
-        
-        # 400張以上大戶相關欄位
         p_cols = [c for c in df.columns if '人數' in c and any(x in c for x in ['400', '600', '800', '1000'])]
         s_cols = [c for c in df.columns if '持股數' in c and any(x in c for x in ['400', '600', '800', '1000'])]
         
@@ -82,15 +46,13 @@ def get_chip_info(stock_id):
         diff_p = latest[p_cols].astype(float).sum() - prev[p_cols].astype(float).sum()
         diff_s = latest[s_cols].astype(float).sum() - prev[s_cols].astype(float).sum()
         
-        # 條件：大戶張數必須增加 (這是核心)
+        # 只要「張數」增加就符合 (移除人數必須增加的嚴格限制)
         if diff_s > 0:
-            # 分數：張數增加權重 80%，人數增加權重 20%
-            score = (diff_s / 1000 * 0.8) + (diff_p * 0.2)
             return {
+                "代碼": stock_id,
                 "大戶增減張數": int(diff_s/1000),
                 "大戶增減人數": int(diff_p),
-                "推薦分數": round(score, 2),
-                "查看詳情": f"https://norway.twsthr.info/StockHolders.aspx?stock={stock_id}"
+                "最新大戶持股比": latest['大戶持股比率(%)']
             }
     except:
         return None
@@ -98,44 +60,49 @@ def get_chip_info(stock_id):
 
 # --- 3. 網頁介面 ---
 
-st.title("🏹 台股強勢動能 + 大戶吃貨篩選器")
+st.title("🏹 大戶吃貨追蹤器 (籌碼優先模式)")
 
-tab1, tab2 = st.tabs(["全市場掃描", "單一股票檢查"])
+# 讓使用者可以自己調整股價篩選門檻
+momentum_filter = st.checkbox("只顯示股價強勢（接近120日高點）的股票", value=False)
 
-with tab1:
-    if st.button("🚀 開始全自動掃描", type="primary"):
-        all_stocks = fetch_all_stock_ids()
-        st.write(f"已獲取 {len(all_stocks)} 支股票，正在篩選動能標的...")
+if st.button("🚀 開始分析全市場 (依大戶進場量排序)"):
+    all_stocks = fetch_all_stock_ids()
+    st.write(f"正在檢查 {len(all_stocks)} 支股票的籌碼狀態...")
+    
+    results = []
+    bar = st.progress(0)
+    status = st.empty()
+    
+    # 為了避免跑太久被系統中斷，我們先跑前 300 支，或你可以調整這個範圍
+    # 如果要跑全市場，請注意 time.sleep 會讓時間變長
+    test_range = all_stocks # 這裡可以改成 all_stocks[:500] 先測試速度
+    
+    for i, s_id in enumerate(test_range):
+        status.text(f"檢查中: {s_id} ({i}/{len(test_range)})")
+        chip = get_chip_info(s_id)
         
-        candidates = check_momentum(all_stocks)
+        if chip:
+            # 如果勾選了強勢股過濾
+            if momentum_filter:
+                try:
+                    data = yf.download(f"{s_id}.TW", period="1y", progress=False)
+                    curr = data['Close'].iloc[-1]
+                    high = data['High'].iloc[-120:].max()
+                    if curr < high * 0.90: # 如果低於高點 10% 就不顯示
+                        continue
+                    chip['目前股價'] = round(curr, 2)
+                except:
+                    pass
+            results.append(chip)
         
-        if candidates:
-            st.write(f"找到 {len(candidates)} 支強勢股，正在分析大戶籌碼...")
-            results = []
-            chip_bar = st.progress(0)
-            for i, item in enumerate(candidates):
-                chip = get_chip_info(item['代碼'])
-                if chip:
-                    item.update(chip)
-                    results.append(item)
-                time.sleep(1.1) # 避免被鎖 IP
-                chip_bar.progress((i+1)/len(candidates))
-            
-            if results:
-                df = pd.DataFrame(results).sort_values(by="推薦分數", ascending=False)
-                st.dataframe(df, use_container_width=True)
-                st.balloons()
-            else:
-                st.warning("目前強勢股中，沒有大戶正在加碼的標的。")
-        else:
-            st.error("目前市場上沒有符合動能條件的股票。")
+        # 只有在有結果時才稍微停頓，避免被鎖 IP
+        if i % 10 == 0:
+            time.sleep(0.5)
+        bar.progress((i+1)/len(test_range))
 
-with tab2:
-    test_id = st.text_input("輸入股票代碼測試 (例如: 3535)", "3535")
-    if st.button("檢查籌碼"):
-        chip_test = get_chip_info(test_id)
-        if chip_test:
-            st.success(f"股票 {test_id} 符合大戶增加條件！")
-            st.write(chip_test)
-        else:
-            st.error(f"股票 {test_id} 大戶張數未增加。")
+    if results:
+        df = pd.DataFrame(results).sort_values(by="大戶增減張數", ascending=False)
+        st.success(f"發現 {len(results)} 支大戶加碼股！")
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.warning("沒搜出結果，請確認是否被網站暫時封鎖 IP。")
