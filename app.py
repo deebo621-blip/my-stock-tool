@@ -3,6 +3,15 @@ import pandas as pd
 import yfinance as yf
 import requests
 import time
+import ssl
+
+# 加入這兩行，強行跳過 SSL 驗證
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
 from datetime import datetime, timedelta
 
 # --- 網頁配置 ---
