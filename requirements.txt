@@ -1,11 +1,5 @@
-streamlit
-yfinance
-pandas
-requests
-beautifulsoup4
-lxml
-html5lib
 FinMind
+tqdm
 streamlit
 yfinance
 pandas
