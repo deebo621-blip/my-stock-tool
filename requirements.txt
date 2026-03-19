@@ -5,3 +5,7 @@ requests
 beautifulsoup4
 lxml
 html5lib
+FinMind
+streamlit
+yfinance
+pandas
