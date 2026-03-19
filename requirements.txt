@@ -1,5 +1,4 @@
-FinMind
-tqdm
 streamlit
 yfinance
 pandas
+requests
