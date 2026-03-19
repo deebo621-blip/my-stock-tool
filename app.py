@@ -14,34 +14,47 @@ else:
 
 st.set_page_config(page_title="台股長線突破選股器", layout="wide")
 
-# --- 2. 獲取全市場名單 ---
+# --- 2. 獲取全市場名單 (改用官方 Open API，穩定不封鎖) ---
 @st.cache_data(ttl=86400)
 def fetch_all_stock_ids():
-    """抓取全台股上市櫃普通股名單"""
+    """透過政府開放資料 API 抓取全市場上市櫃代碼"""
     stocks = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-    }
     try:
-        urls = [
-            'https://isin.twse.com.tw/isin/C_public.jsp?strMode=2', # 上市
-            'https://isin.twse.com.tw/isin/C_public.jsp?strMode=4'  # 上櫃
-        ]
-        for url in urls:
-            res = requests.get(url, headers=headers, verify=False, timeout=15)
-            df = pd.read_html(res.text)[0]
-            df = df[df[3] == 'ES'] 
-            stocks.extend(df[0].apply(lambda x: str(x).split(' ')[0]).tolist())
+        # 1. 抓取上市股票 (TWSE Open API)
+        url_twse = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        res_twse = requests.get(url_twse, timeout=15)
+        data_twse = res_twse.json()
+        for item in data_twse:
+            code = str(item.get("Code", ""))
+            # 只取 4 碼的純數字代碼 (排除權證與多數 ETF)
+            if len(code) == 4 and code.isdigit():
+                stocks.append(code)
+
+        # 2. 抓取上櫃股票 (TPEx Open API)
+        url_tpex = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+        res_tpex = requests.get(url_tpex, timeout=15)
+        data_tpex = res_tpex.json()
+        for item in data_tpex:
+            code = str(item.get("SecuritiesCompanyCode", ""))
+            if len(code) == 4 and code.isdigit():
+                stocks.append(code)
+                
+        # 去除重複並回傳
+        valid_stocks = list(set(stocks))
+        
+        if not valid_stocks:
+            raise ValueError("API 回傳空資料")
             
-        valid_stocks = [s for s in stocks if len(s) == 4 and s.isdigit()]
         return valid_stocks
+        
     except Exception as e:
-        return ["2330", "2317", "2454", "2382", "3231", "3535", "1513", "1519", "2308", "2603", "2609", "3037", "3481"]
+        st.error(f"連線官方 API 失敗: {e}")
+        return ["2330", "2317", "2454", "2382", "3231", "3535", "1513"]
 
 # --- 3. 核心篩選邏輯 ---
 def run_screening():
     all_stocks = fetch_all_stock_ids()
-    st.info(f"📥 已獲取 {len(all_stocks)} 支股票，正在掃描符合任一條件的標的 (預計需 2-3 分鐘)...")
+    st.info(f"📥 成功從官方開放資料庫獲取 {len(all_stocks)} 支股票，開始掃描 (預計需 2-4 分鐘)...")
     
     results = []
     bar = st.progress(0)
@@ -55,7 +68,7 @@ def run_screening():
         status.text(f"掃描進度: {min(i+batch_size, len(all_stocks))}/{len(all_stocks)} 支...")
         
         try:
-            # 下載歷史所有數據以判斷月線創高
+            # 下載歷史所有數據
             data = yf.download(tickers, period="max", group_by='ticker', progress=False, threads=True)
             for s_id in batch:
                 try:
@@ -82,8 +95,6 @@ def run_screening():
                     
                     # 只要符合其中一個條件就列入
                     if pass_cond1 or pass_cond2:
-                        
-                        # 判斷是符合哪一種
                         if pass_cond1 and pass_cond2:
                             tag = "🔥 雙重符合"
                         elif pass_cond1:
