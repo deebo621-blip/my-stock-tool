@@ -3,8 +3,12 @@ import pandas as pd
 import yfinance as yf
 import requests
 import ssl
+import urllib3
 
 # --- 1. 基礎安全設定 ---
+# 關閉 requests 的 SSL 驗證警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -14,7 +18,7 @@ else:
 
 st.set_page_config(page_title="台股長線突破選股器", layout="wide")
 
-# --- 2. 獲取全市場名單 (改用官方 Open API，穩定不封鎖) ---
+# --- 2. 獲取全市場名單 (使用官方 Open API + 強制略過 SSL 驗證) ---
 @st.cache_data(ttl=86400)
 def fetch_all_stock_ids():
     """透過政府開放資料 API 抓取全市場上市櫃代碼"""
@@ -22,7 +26,7 @@ def fetch_all_stock_ids():
     try:
         # 1. 抓取上市股票 (TWSE Open API)
         url_twse = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-        res_twse = requests.get(url_twse, timeout=15)
+        res_twse = requests.get(url_twse, verify=False, timeout=15)
         data_twse = res_twse.json()
         for item in data_twse:
             code = str(item.get("Code", ""))
@@ -32,7 +36,7 @@ def fetch_all_stock_ids():
 
         # 2. 抓取上櫃股票 (TPEx Open API)
         url_tpex = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
-        res_tpex = requests.get(url_tpex, timeout=15)
+        res_tpex = requests.get(url_tpex, verify=False, timeout=15)
         data_tpex = res_tpex.json()
         for item in data_tpex:
             code = str(item.get("SecuritiesCompanyCode", ""))
@@ -54,7 +58,7 @@ def fetch_all_stock_ids():
 # --- 3. 核心篩選邏輯 ---
 def run_screening():
     all_stocks = fetch_all_stock_ids()
-    st.info(f"📥 成功從官方開放資料庫獲取 {len(all_stocks)} 支股票，開始掃描 (預計需 2-4 分鐘)...")
+    st.info(f"📥 成功獲取 {len(all_stocks)} 支股票，正在掃描符合任一條件的標的 (預計需 2-4 分鐘)...")
     
     results = []
     bar = st.progress(0)
@@ -68,7 +72,7 @@ def run_screening():
         status.text(f"掃描進度: {min(i+batch_size, len(all_stocks))}/{len(all_stocks)} 支...")
         
         try:
-            # 下載歷史所有數據
+            # 下載歷史所有數據以判斷月線創高
             data = yf.download(tickers, period="max", group_by='ticker', progress=False, threads=True)
             for s_id in batch:
                 try:
@@ -95,6 +99,8 @@ def run_screening():
                     
                     # 只要符合其中一個條件就列入
                     if pass_cond1 or pass_cond2:
+                        
+                        # 判斷是符合哪一種
                         if pass_cond1 and pass_cond2:
                             tag = "🔥 雙重符合"
                         elif pass_cond1:
